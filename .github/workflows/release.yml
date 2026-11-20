@@ -1,0 +1,47 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Test
+        run: |
+          unformatted=$(find . -name '*.go' -not -path './vendor/*' -exec gofmt -l {} +)
+          if [[ -n "$unformatted" ]]; then
+            printf 'Unformatted Go files:\n%s\n' "$unformatted"
+            exit 1
+          fi
+          go test ./...
+          go vet ./...
+      - name: Build and verify release assets
+        id: assets
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          bash scripts/build-release.sh "$RELEASE_TAG"
+          printf 'version=%s\n' "${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          fail_on_unmatched_files: true
+          files: |
+            dist/wtree_${{ steps.assets.outputs.version }}_darwin_amd64.tar.gz
+            dist/wtree_${{ steps.assets.outputs.version }}_darwin_arm64.tar.gz
+            dist/wtree_${{ steps.assets.outputs.version }}_linux_amd64.tar.gz
+            dist/wtree_${{ steps.assets.outputs.version }}_linux_arm64.tar.gz
+            dist/SHA256SUMS
