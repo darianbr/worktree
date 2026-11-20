@@ -38,10 +38,10 @@ func SelectEngine(ctx context.Context) (Engine, error) {
 }
 
 func selectEngine(ctx context.Context, platform, override string, lookPath func(string) (string, error), runner CommandRunner) (Engine, error) {
-	candidates := []string{"podman", "docker"}
 	if platform == "darwin" {
-		candidates = []string{"docker"}
+		return Engine{}, errors.New("macOS container networking has not been validated for loopback-only isolation; wtree cannot safely start or modify routes on macOS yet")
 	}
+	candidates := []string{"podman", "docker"}
 	if override != "" {
 		candidates = []string{override}
 	}

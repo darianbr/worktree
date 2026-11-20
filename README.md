@@ -14,8 +14,9 @@ redirects on port 80. The rootless Podman integration test described below has
 exercised the adapter with a self-signed certificate and high ports; it is not
 a full production smoke test.
 
-macOS is **not validated or claimed supported**: no real Mac test has been
-performed. Docker Desktop 4.34 or later and its host-networking setting are
+macOS is **not validated or supported yet**: no real Mac test has been
+performed, and route activation is disabled there to avoid exposing a listener
+without a verified loopback boundary. Docker Desktop 4.34 or later and its host-networking setting are
 intended prerequisites, but Docker Desktop implements host networking through
 its VM and does not guarantee that the host-side listener has the same
 loopback-only boundary as native Linux. Do not rely on it for LAN isolation;
@@ -63,7 +64,7 @@ shared key if compromised.
 Install and start a usable Linux Docker or Podman engine; the Caddy image is
 `docker.io/library/caddy:2.11.9`. On Linux, wtree reuses an existing compatible
 `wtree-caddy` container if found; otherwise it prefers Podman, then Docker.
-On macOS its default candidate is Docker. Set `WTREE_CONTAINER_ENGINE` to the
+Set `WTREE_CONTAINER_ENGINE` to the
 desired executable to override selection. If both engines have a `wtree-caddy`
 container, choose an engine and resolve the duplicate deliberately. Existing
 containers must have compatible read-only config and TLS mounts; use the same

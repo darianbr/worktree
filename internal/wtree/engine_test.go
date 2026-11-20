@@ -43,6 +43,17 @@ func TestEngineStartUsesHostNetworkAndReadOnlyMounts(t *testing.T) {
 	}
 }
 
+func TestEngineRejectsUnverifiedMacNetworking(t *testing.T) {
+	called := false
+	_, err := selectEngine(context.Background(), "darwin", "docker", func(name string) (string, error) {
+		called = true
+		return name, nil
+	}, &fakeRunner{})
+	if err == nil || !strings.Contains(err.Error(), "loopback-only") || called {
+		t.Fatalf("expected fail-closed macOS error before invoking Docker, got %v (looked up: %t)", err, called)
+	}
+}
+
 func TestEngineBindMountRelabelOptIn(t *testing.T) {
 	for _, tc := range []struct {
 		name, binary, relabel, mode string
