@@ -7,24 +7,28 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 
 	"github.com/gofrs/flock"
 )
 
 type Route struct {
-	Slug      string `json:"slug"`
-	Port      uint16 `json:"port"`
-	Worktree  string `json:"worktree"`
+	Slug     string `json:"slug"`
+	Port     uint16 `json:"port"`
+	Worktree string `json:"worktree"`
 }
 
 type Registry struct {
 	path string
 	lock *flock.Flock
+	mu   sync.Mutex
 }
 type registryFile struct {
 	Version int     `json:"version"`
 	Routes  []Route `json:"routes"`
 }
+
+var errNoChange = errors.New("registry unchanged")
 
 func OpenRegistry(path string) (*Registry, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
@@ -54,6 +58,16 @@ func (r *Registry) read() ([]Route, error) {
 // Transaction holds the interprocess lock across reading, applying, and committing.
 // The callback must not invoke another Registry method while holding the lock.
 func (r *Registry) Transaction(fn func([]Route) ([]Route, error)) error {
+	return r.transaction(func(routes []Route) ([]Route, func() error, error) {
+		next, err := fn(routes)
+		return next, nil, err
+	})
+}
+
+// transaction keeps compensation under the same lock as activation and commit.
+func (r *Registry) transaction(fn func([]Route) ([]Route, func() error, error)) (result error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if err := r.lock.Lock(); err != nil {
 		return err
 	}
@@ -62,10 +76,20 @@ func (r *Registry) Transaction(fn func([]Route) ([]Route, error)) error {
 	if err != nil {
 		return err
 	}
-	routes, err = fn(routes)
+	routes, rollback, err := fn(routes)
+	if errors.Is(err, errNoChange) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
+	defer func() {
+		if result != nil && rollback != nil {
+			if err := rollback(); err != nil {
+				result = errors.Join(result, fmt.Errorf("compensation failed: %w", err))
+			}
+		}
+	}()
 	sort.Slice(routes, func(i, j int) bool { return routes[i].Slug < routes[j].Slug })
 	data, err := json.MarshalIndent(registryFile{Version: 1, Routes: routes}, "", "  ")
 	if err != nil {
@@ -118,6 +142,8 @@ func (r *Registry) Remove(slug string) (bool, error) {
 }
 
 func (r *Registry) List() ([]Route, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if err := r.lock.Lock(); err != nil {
 		return nil, err
 	}

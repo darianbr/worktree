@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestRegistryPersistenceAndRemoval(t *testing.T) {
@@ -66,5 +67,46 @@ func TestRegistryConcurrentDuplicate(t *testing.T) {
 	}
 	if ok != 1 {
 		t.Fatalf("%d registrations succeeded, want exactly one", ok)
+	}
+}
+
+func TestRegistrySameInstanceSerializesTransactions(t *testing.T) {
+	r, err := OpenRegistry(filepath.Join(t.TempDir(), "routes.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered, release, done := make(chan struct{}), make(chan struct{}), make(chan error, 2)
+	go func() {
+		done <- r.Transaction(func(routes []Route) ([]Route, error) {
+			close(entered)
+			<-release
+			return append(routes, Route{Slug: "first", Port: 3000}), nil
+		})
+	}()
+	<-entered
+	second := make(chan struct{})
+	go func() {
+		done <- r.Transaction(func(routes []Route) ([]Route, error) {
+			close(second)
+			return append(routes, Route{Slug: "second", Port: 3001}), nil
+		})
+	}()
+	select {
+	case <-second:
+		close(release)
+		<-done
+		<-done
+		t.Fatal("second callback entered while first held the lock")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	for i := 0; i < 2; i++ {
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+	routes, err := r.List()
+	if err != nil || len(routes) != 2 {
+		t.Fatalf("lost update: %v %v", routes, err)
 	}
 }
