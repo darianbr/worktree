@@ -3,6 +3,13 @@
 **Status:** Draft for approval  
 **Date:** 2026-11-19
 
+**Ownership update (2026-11-21):** The wtree Make module is owned by the
+Worktree repository, not the canonical Makefiles repository. It reuses the
+canonical Makefiles core; checkout-based installation is documented in the
+project README. Remote module distribution and access to private release
+assets remain unresolved. References below to adding the module to the shared
+repository describe the original design and are superseded by this update.
+
 ## Intent
 
 Give company engineers a low-friction way to open parallel Git worktree dev servers at stable HTTPS URLs, without remembering ports. The primary workflow should fit existing project commands: an engineer runs `make start`, sees a URL such as `https://jira-12345.wtree.dev`, and can work. A corresponding stop action removes the route.
