@@ -38,9 +38,12 @@ cd "$tmp/project"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 run() { make --no-print-directory "$@" > "$tmp/out" 2>&1 || { cat "$tmp/out" >&2; fail "make $*"; }; }
 database() {
-  local result=0
-  make --no-print-directory -qp "$@" > "$tmp/database" 2>&1 || result=$?
-  [[ $result -le 1 ]] || { cat "$tmp/database" >&2; fail "make database $*"; }
+  # -n prints recipes without running ordinary targets. GNU Make still runs
+  # recursive make commands; unlike -q, this does not propagate an expected
+  # "target out of date" exit code as an error on macOS's GNU Make 3.81.
+  make --no-print-directory -np "$@" > "$tmp/database" 2>&1 || {
+    tail -40 "$tmp/database" >&2; fail "make database $*"
+  }
 }
 normal_database() {
   # GNU Make 4.4.1 can loop in -q with multiple double-colon goals.
@@ -61,7 +64,7 @@ for order in other-first wtree-first; do
     printf '%s\n' 'include .makefiles/modules/wtree/Makefile' 'include .makefiles/modules/other/Makefile' > Makefile
   fi
 
-  # -q prevents execution while -p exposes the outer target-specific shell.
+  # The make database exposes the outer target-specific shell.
   for module in wtree other; do
     database "$module" status
     grep -Fx 'status: SHELL := /usr/bin/true' "$tmp/database" >/dev/null || {
