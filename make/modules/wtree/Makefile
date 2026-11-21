@@ -16,6 +16,10 @@ endif
 ifneq ($(MF_LEGACY_GOALS),1)
 ifeq ($(words $(MAKECMDGOALS)),2)
 $(MF_DISPATCH_TARGET): SHELL := /usr/bin/true
+# GNU Make 3.81 can start outer target prerequisites before the dispatch
+# gate applies its old-file flag under -j. Serialize only this outer make;
+# the selected module's recursive make retains its own parallelism.
+.NOTPARALLEL:
 endif
 endif
 

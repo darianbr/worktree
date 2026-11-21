@@ -67,8 +67,10 @@ for order in other-first wtree-first; do
   # The make database exposes the outer target-specific shell.
   for module in wtree other; do
     database "$module" status
-    grep -Fx 'status: SHELL := /usr/bin/true' "$tmp/database" >/dev/null || {
-      grep '^status:.*SHELL' "$tmp/database" >&2 || true
+    # GNU Make 3.81 prints target variables within the target's database
+    # entry; newer versions print them as target-specific assignments.
+    grep -Ex 'status: SHELL := /usr/bin/true|# SHELL := /usr/bin/true' "$tmp/database" >/dev/null || {
+      grep -E '^(status:.*SHELL|# SHELL :=)' "$tmp/database" >&2 || true
       fail "$order: $module status did not select /usr/bin/true"
     }
   done
@@ -78,7 +80,7 @@ for order in other-first wtree-first; do
       legacy) normal_database MF_LEGACY_GOALS=1 status help ;;
       multiple) normal_database status help status ;;
     esac
-    if grep -E '^status: (override )?SHELL[[:space:]]*[:?+]?=' "$tmp/database" >/dev/null; then
+    if grep -E '^(status: (override )?SHELL[[:space:]]*[:?+]?=|# SHELL := /(usr/)?bin/true)' "$tmp/database" >/dev/null; then
       fail "$order: $mode unexpectedly assigned a target-specific shell"
     fi
   done
