@@ -167,8 +167,8 @@ route and `make wtree down` removes it. `WTREE_SLUG` overrides the branch-based
 name; `WTREE_CONTAINER_ENGINE`, `WTREE_CERT_FILE`, and `WTREE_KEY_FILE` are
 passed through. Scoped `clean` leaves active routes, the proxy and the binary
 alone. The canonical aggregate `make clean`, by contrast, removes the shared
-`.makefiles/` cache. The [example](examples/wtree/README.md) composes routing
-with a project-owned foreground server.
+`.makefiles/` cache. Projects remain responsible for starting and stopping
+their development servers.
 
 `WTREE_VERSION` defaults to `0.1.0`, `WTREE_BIN` to
 `.makefiles/tools/wtree-$(WTREE_VERSION)`, and `WTREE_RELEASE_URL` to the

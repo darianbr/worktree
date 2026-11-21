@@ -164,8 +164,16 @@ before=$(wc -l < "$CLI_LOG")
 run wtree clean
 [[ $(wc -l < "$CLI_LOG") -eq $before && -x .makefiles/tools/wtree-0.1.0 ]] || fail 'clean touched CLI or binary'
 
-# The example composes the module with a project-owned foreground server.
-cp "$repo/examples/wtree/Makefile" Makefile
+# A consumer can compose the module with a project-owned foreground server.
+cat > Makefile <<'EOF'
+WTREE_PORT ?= 8000
+export WTREE_PORT
+include .makefiles/modules/wtree/Makefile
+.PHONY: start stop
+start:
+EOF
+printf '\t%s\n' '$(MAKE) wtree up' 'python3 -m http.server "$$WTREE_PORT" --bind 127.0.0.1' >> Makefile
+printf 'stop:\n\t%s\n' '$(MAKE) wtree down' >> Makefile
 cat > "$tmp/bin/python3" <<'EOF'
 #!/bin/sh
 printf 'server:' >> "$CLI_LOG"
@@ -178,11 +186,11 @@ run stop WTREE_SLUG=example
 contains "$CLI_LOG" 'args: <up> <--port> <3456> <--slug> <example>'
 contains "$CLI_LOG" 'server: <-m> <http.server> <3456> <--bind> <127.0.0.1>'
 contains "$CLI_LOG" 'args: <down> <--slug> <example>'
-hostile_example_port='3"; touch example-injected; #'
-run start "WTREE_PORT=$hostile_example_port"
-contains "$CLI_LOG" "args: <up> <--port> <$hostile_example_port>"
-contains "$CLI_LOG" "server: <-m> <http.server> <$hostile_example_port> <--bind> <127.0.0.1>"
-[[ ! -e example-injected ]] || fail 'example port executed shell commands'
+hostile_consumer_port='3"; touch consumer-injected; #'
+run start "WTREE_PORT=$hostile_consumer_port"
+contains "$CLI_LOG" "args: <up> <--port> <$hostile_consumer_port>"
+contains "$CLI_LOG" "server: <-m> <http.server> <$hostile_consumer_port> <--bind> <127.0.0.1>"
+[[ ! -e consumer-injected ]] || fail 'consumer port executed shell commands'
 
 # Checksums, platform, protocol and tools fail closed.
 rm -f .makefiles/tools/wtree-0.2.0

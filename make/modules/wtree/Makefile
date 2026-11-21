@@ -11,6 +11,14 @@ endif
 
 -include .makefiles/modules/Makefile
 
+# The pinned core suppresses the outer aggregate target with /bin/true,
+# which is absent on macOS. Preserve that gate using a portable fixed path.
+ifneq ($(MF_LEGACY_GOALS),1)
+ifeq ($(words $(MAKECMDGOALS)),2)
+$(MF_DISPATCH_TARGET): SHELL := /usr/bin/true
+endif
+endif
+
 ifndef MF_TOOLS_ROOT
 $(error MF_TOOLS_ROOT is not set. Include modules/Makefile before using modules/wtree/Makefile.)
 endif

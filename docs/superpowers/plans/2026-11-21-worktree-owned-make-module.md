@@ -13,7 +13,7 @@
 
 ## Tasks
 
-1. Port the module, example, and fixture tests from the isolated Makefiles branch into this repository; preserve their security checks.
+1. Port the module and fixture tests from the isolated Makefiles branch into this repository; preserve their security checks. A standalone example is not needed.
 2. Provide checkout-based bootstrap that uses the canonical core without fetching an unrelated module or overwriting existing core, and test fresh and existing consumer caches offline.
 3. Update Worktree onboarding and CI to run the module tests; clearly identify the missing remote distribution mechanism and platform smoke tests.
 4. Run module tests, Go tests, vet, and a fresh review; preserve the original integration branch and untracked files.

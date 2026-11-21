@@ -7,7 +7,7 @@ source_repo=${MAKEFILES_CORE_GIT:?set MAKEFILES_CORE_GIT to a local canonical Ma
 core_revision=ecb127ac02953f599c5eac7c7ca03daae787ebe2
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-mkdir -p "$tmp/canonical" "$tmp/fresh" "$tmp/existing" "$tmp/bin" "$tmp/example with spaces"
+mkdir -p "$tmp/canonical" "$tmp/fresh" "$tmp/existing" "$tmp/bin" "$tmp/consumer with spaces"
 git -C "$source_repo" archive "$core_revision" modules/Makefile modules/core modules/npm | tar -xf - -C "$tmp/canonical"
 cat > "$tmp/bin/wtree" <<'EOF'
 #!/bin/sh
@@ -163,10 +163,10 @@ run bash -c 'cd "$1" && bash "$WTREE_CHECKOUT/scripts/bootstrap-make-module.sh"'
 run make -C "$tmp/fresh" --no-print-directory wtree help
 contains "$tmp/out" 'Available targets: clean down help install status up'
 
-# The shipped example must also bootstrap from a completely empty cache.
-cp "$repo/examples/wtree/Makefile" "$tmp/example with spaces/Makefile"
-run make -C "$tmp/example with spaces" --no-print-directory wtree status
-[[ -f "$tmp/example with spaces/.makefiles/modules/wtree/targets.mk" ]] || fail 'example did not bootstrap'
+# A consumer path containing spaces must bootstrap from a completely empty cache.
+cp "$tmp/fresh/Makefile" "$tmp/consumer with spaces/Makefile"
+run make -C "$tmp/consumer with spaces" --no-print-directory wtree status
+[[ -f "$tmp/consumer with spaces/.makefiles/modules/wtree/targets.mk" ]] || fail 'consumer did not bootstrap'
 
 # Existing canonical core and module data must survive bootstrap unchanged.
 mkdir -p "$tmp/existing/.makefiles/modules"
@@ -229,7 +229,7 @@ done
 # A real first Make invocation reports a missing source instead of ignoring it.
 unset MAKEFILES_CHECKOUT
 mkdir "$tmp/missing-first-run"
-cp "$repo/examples/wtree/Makefile" "$tmp/missing-first-run/Makefile"
+cp "$tmp/fresh/Makefile" "$tmp/missing-first-run/Makefile"
 fails make -C "$tmp/missing-first-run" --no-print-directory wtree status
 contains "$tmp/out" 'MAKEFILES_CHECKOUT'
 [[ ! -e "$tmp/missing-first-run/.makefiles" ]] || fail 'failed first run created a cache'

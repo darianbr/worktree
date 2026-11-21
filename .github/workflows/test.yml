@@ -42,6 +42,7 @@ jobs:
         env:
           MAKEFILES_CORE_GIT: ${{ github.workspace }}/.ci/makefiles
         run: |
+          bash tests/make-dispatch.sh
           bash tests/make-bootstrap.sh
           bash tests/wtree-module.sh
       - name: Test release asset validator
