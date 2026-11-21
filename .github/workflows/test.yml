@@ -16,6 +16,13 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      # Tests use this pinned local snapshot; the test scripts never fetch it.
+      - uses: actions/checkout@v4
+        with:
+          repository: darianbr/makefiles
+          ref: ecb127ac02953f599c5eac7c7ca03daae787ebe2
+          path: .ci/makefiles
+          persist-credentials: false
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -30,5 +37,13 @@ jobs:
           fi
       - run: go test ./...
       - run: go vet ./...
+      - name: Test offline Make integration
+        shell: bash
+        env:
+          MAKEFILES_CORE_GIT: ${{ github.workspace }}/.ci/makefiles
+        run: |
+          bash tests/make-dispatch.sh
+          bash tests/make-bootstrap.sh
+          bash tests/wtree-module.sh
       - name: Test release asset validator
         run: bash scripts/check-release-assets.sh

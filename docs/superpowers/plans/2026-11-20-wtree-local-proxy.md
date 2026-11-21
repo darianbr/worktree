@@ -1,5 +1,10 @@
 # wtree.dev Local Development Proxy Implementation Plan
 
+> Ownership update (2026-11-21): Task 5's Make module belongs in the Worktree
+> repository, not the shared Makefiles repository. See the checkout-based
+> reparenting plan and the current README for its implementation and remaining
+> distribution limitations. Other platform and smoke-test requirements remain.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Give engineers a one-command, local-only HTTPS URL for a dev server running in a Git worktree, with Caddy and a reusable shared Make module.
