@@ -10,9 +10,10 @@ Windows is not supported in v1.
 The CLI and release builds target Linux and macOS on amd64 and arm64. On Linux,
 wtree uses Docker or Podman with host networking. It configures Caddy to bind
 `127.0.0.1:443`, proxies to `127.0.0.1:<port>`, and disables automatic HTTP
-redirects on port 80. The rootless Podman integration test described below has
-exercised the adapter with a self-signed certificate and high ports; it is not
-a full production smoke test.
+redirects on port 80. A Linux rootless Podman smoke test exercised port 443,
+a publicly trusted wildcard certificate and two simultaneous Git worktree
+routes, including route removal. The separate Podman integration test below
+uses a self-signed certificate and high ports.
 
 macOS is **not validated or supported yet**: no real Mac test has been
 performed, and route activation is disabled there to avoid exposing a listener
@@ -25,9 +26,12 @@ before use. Docker Desktop's Settings > Resources > Network > Enable host
 networking must be enabled and applied; check the setting after restart. Podman
 Machine on macOS is not validated either.
 
-No Docker smoke test, publicly trusted certificate smoke test, or full port 443
-smoke test has been run. In particular, the high-port Podman test does not
-establish public trust, low-port access, or end-to-end Make onboarding.
+No Docker smoke test or LAN-side isolation test has been run. The port-443
+smoke test verified that another loopback address refused connections; that
+alone does not establish LAN isolation. A separate Linux rootless Podman
+end-to-end Make smoke test used a locally built binary and the former local
+module with a React/Vite app, served it over trusted HTTPS, and verified route
+removal on Ctrl-C. It did not test the canonical remote fetch or release download.
 
 ## Certificate provisioning
 
@@ -119,47 +123,45 @@ remain responsible for their own protections.
 With Go 1.26 or newer, build the CLI with `go build -o wtree ./cmd/wtree`.
 Run the checks with `go test ./...` and `go vet ./...`.
 
-## Make integration
+## Manual test upstreams
 
-The wtree module lives in this checkout, not in the canonical Makefiles
-repository. To bootstrap a consumer, make trusted local checkouts of Worktree
-and the canonical `darianbr/makefiles` repository. Set `WTREE_CHECKOUT` to the
-absolute Worktree checkout path. For a fresh cache, also set
-`MAKEFILES_CHECKOUT` to the absolute canonical checkout path; its
-`modules/Makefile` and `modules/core/` are the source of the shared core.
-These are local paths, not URLs: the bootstrap does not clone, download or
-authenticate either checkout. Review and pin the checkout revisions according
-to your organization's policy.
+The repository includes a small loopback-only HTTP server for exercising
+multiple routes. Start each instance in a separate terminal, choosing a
+different port and name:
 
-Add this to the consumer's Makefile (recipe lines require tabs):
-
-```make
-export WTREE_CHECKOUT MAKEFILES_CHECKOUT
-include .makefiles/modules/wtree/Makefile
-
-.makefiles/modules/wtree/Makefile:
-	@test -n "$$WTREE_CHECKOUT" || { echo 'WTREE_CHECKOUT is required' >&2; exit 1; }
-	@bash "$$WTREE_CHECKOUT/scripts/bootstrap-make-module.sh"
+```sh
+go run ./cmd/wtree-test-server --port 3001 --name first
+go run ./cmd/wtree-test-server --port 3002 --name second
 ```
 
-For example, export `WTREE_CHECKOUT=/path/to/worktree` and
-`MAKEFILES_CHECKOUT=/path/to/makefiles`, then run `make wtree help`. GNU Make
-remakes the missing include on first invocation. The bootstrap copies only the
-shared canonical root/core and the Worktree-owned module; it does not fetch or
-install any unrelated canonical module. A consumer with an existing complete
-canonical core can omit `MAKEFILES_CHECKOUT`; its core and other modules are
-left untouched. The checks reject missing, incomplete, symlinked or visibly
-invalid core files, but are structural checks, not a cryptographic integrity
-or version-compatibility guarantee. Use a trusted, compatible core checkout.
+Each response is JSON containing the instance name, request host and path.
+Register routes from separate Git worktrees with the corresponding ports,
+then request their HTTPS URLs to confirm each reaches the intended server.
+Stop each server with Ctrl-C and remove its route with `wtree down`.
 
-Existing core is never silently updated. Incomplete core or a conflicting
-existing wtree module fails without replacing it. An identical module is
-reused on repeated bootstrap. To update a differing module or repair a partial
-cache, inspect and deliberately remove or move the affected cache files first;
-keep unrelated modules and user data. The bootstrap uses a temporary lock;
-after an interrupted bootstrap, inspect and remove a stale
-`.makefiles/modules/.wtree-bootstrap.lock` before retrying. Ignore
-`.makefiles/` in the consumer's Git repository.
+For local testing, `.certs/` is Git-ignored. If a trusted full chain and key
+are placed there, set `WTREE_CERT_FILE` and `WTREE_KEY_FILE` to their absolute
+paths before calling `wtree`; use the same paths for all routes sharing the
+proxy. Keep the directory and key owner-only, and never commit the files.
+Use the Linux port-443 and SELinux precautions above and below; this server
+does not bypass them.
+
+## Make integration
+
+The wtree module is maintained in the canonical `darianbr/makefiles`
+repository. Add this to the consumer's Makefile (recipe lines require tabs):
+
+```make
+-include .makefiles/modules/wtree/Makefile
+
+.makefiles/modules/%/Makefile:
+	curl -sf https://darianbr.github.io/makefiles/fetch | bash /dev/stdin $*
+```
+
+GNU Make remakes the missing include on first invocation, for example when
+running `make wtree help`. Add `.makefiles/` to the consumer's Git ignore
+list; it is a generated cache. See the canonical Makefiles documentation for
+fetch and cache management.
 
 `make wtree help`, `install`, `up`, `down`, `status`, and `clean` are scoped
 module operations. For example, `make wtree up WTREE_PORT=3000` registers a
@@ -178,21 +180,11 @@ the checksum is served by the same host and is not an independent signature.
 An existing non-symlink executable `WTREE_BIN` is reused without download,
 reverification or Go. Help and scoped clean do not install the binary.
 
-The default GitHub release repository is private and 0.1.0 is unreleased.
-Authentication for private GitHub release assets is **unresolved**: the
-installer does not configure credentials. Use a pre-provisioned binary or a
-separately accessible HTTPS release mirror via `WTREE_RELEASE_URL`; neither
-private release downloads nor remote module distribution are claimed to work.
-
-To run the offline Make tests, point `MAKEFILES_CORE_GIT` at a local canonical
-Makefiles Git repository containing commit
-`ecb127ac02953f599c5eac7c7ca03daae787ebe2`, then run
-`bash tests/make-bootstrap.sh` and `bash tests/wtree-module.sh`. The tests use
-`git archive` of that exact commit, not the checkout's working files, and do
-not access the network. CI explicitly checks out that pinned canonical commit
-before running them; if the repository becomes private, CI needs separately
-configured read access. The fixture tests do not validate real macOS route
-activation, GitHub authentication, or an end-to-end TLS/container deployment.
+The default GitHub release repository is public, but `v0.1.0` is unreleased,
+so its default asset download is not available yet. Use a pre-provisioned
+binary or an accessible HTTPS release mirror via `WTREE_RELEASE_URL` until a
+matching release is published. Module and dispatcher tests are maintained in
+the canonical Makefiles repository, not this checkout.
 
 ## SELinux and Podman bind mounts
 
@@ -243,10 +235,9 @@ the shared Make module can download its default version, publish a matching
 release URL, which defaults to
 `https://github.com/darianbr/worktree/releases/download/v0.1.0` for that
 version. Alternatively, configure a published version and URL or supply an
-existing non-symlink executable via `WTREE_BIN`. The Make module itself must
-be installed from a local checkout as described above; remote module
-distribution and authentication for private GitHub release assets are not yet
-implemented.
+existing non-symlink executable via `WTREE_BIN`. The canonical Make module
+fetch described above also requires its integration branch to be merged and
+published first.
 
 Pushing a `v*` tag triggers the release workflow. The Linux release builder
 requires GNU tar, gzip, and `sha256sum`. To build and validate assets locally,
