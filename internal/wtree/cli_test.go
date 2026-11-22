@@ -179,7 +179,7 @@ func TestRunLifecycleAndDuplicate(t *testing.T) {
 	if code, _, err := invoke(d, "down"); code != 0 {
 		t.Fatalf("repeat down: %s", err)
 	}
-	if routes, err := r.List(); err != nil || len(routes) != 0 {
+	if routes, err := r.List(context.Background()); err != nil || len(routes) != 0 {
 		t.Fatalf("routes: %v %v", routes, err)
 	}
 }
@@ -236,7 +236,7 @@ func TestCertificatePreflight(t *testing.T) {
 			if code, _, err := invoke(d, "up", "--port", "3000"); code == 0 {
 				t.Fatalf("accepted certificate: %q", err)
 			}
-			routes, err := r.List()
+			routes, err := r.List(context.Background())
 			if err != nil || len(routes) != 0 || e.state != ContainerAbsent {
 				t.Fatalf("side effect: %v %v %v", routes, err, e.state)
 			}
@@ -270,7 +270,7 @@ func TestRunRollbackActivationFailures(t *testing.T) {
 			if failure != "start" && e.active != active {
 				t.Fatal("active configuration changed")
 			}
-			routes, err := r.List()
+			routes, err := r.List(context.Background())
 			if err != nil || len(routes) != 1 || routes[0].Slug != "one" {
 				t.Fatalf("routes: %v %v", routes, err)
 			}
@@ -299,7 +299,7 @@ func TestRunRollbackRegistryCommitFailure(t *testing.T) {
 	if err != nil || !bytes.Equal(old, config) || e.active != active {
 		t.Fatalf("failed to compensate: %v active=%q", err, e.active)
 	}
-	routes, err := r.List()
+	routes, err := r.List(context.Background())
 	if err != nil || len(routes) != 1 || routes[0].Slug != "one" {
 		t.Fatalf("registry: %v %v", routes, err)
 	}
@@ -319,7 +319,7 @@ func TestRunFirstStartFailureRestoresAbsence(t *testing.T) {
 			if e.state != ContainerAbsent {
 				t.Fatalf("container remains: %v", e.state)
 			}
-			if routes, err := r.List(); err != nil || len(routes) != 0 {
+			if routes, err := r.List(context.Background()); err != nil || len(routes) != 0 {
 				t.Fatalf("routes: %v %v", routes, err)
 			}
 		})
@@ -347,7 +347,7 @@ func TestRunDownCommitFailureRestoresRoute(t *testing.T) {
 	if err != nil || !bytes.Equal(old, config) || e.active != active {
 		t.Fatalf("failed to restore: %v", err)
 	}
-	routes, err := r.List()
+	routes, err := r.List(context.Background())
 	if err != nil || len(routes) != 1 || routes[0].Slug != "one" {
 		t.Fatalf("registry: %v %v", routes, err)
 	}

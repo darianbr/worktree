@@ -1,13 +1,16 @@
 package wtree
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"sync"
+	"time"
 
 	"github.com/gofrs/flock"
 )
@@ -55,20 +58,49 @@ func (r *Registry) read() ([]Route, error) {
 	return f.Routes, nil
 }
 
+// LockTimeout bounds registry lock acquisition. WTREE_LOCK_TIMEOUT overrides it
+// in seconds; invalid or missing values fall back to the 5s default.
+func LockTimeout() time.Duration {
+	if v := os.Getenv("WTREE_LOCK_TIMEOUT"); v != "" {
+		if secs, err := strconv.Atoi(v); err == nil && secs > 0 {
+			return time.Duration(secs) * time.Second
+		}
+	}
+	return 5 * time.Second
+}
+
 // Transaction holds the interprocess lock across reading, applying, and committing.
 // The callback must not invoke another Registry method while holding the lock.
-func (r *Registry) Transaction(fn func([]Route) ([]Route, error)) error {
-	return r.transaction(func(routes []Route) ([]Route, func() error, error) {
+func (r *Registry) Transaction(ctx context.Context, fn func([]Route) ([]Route, error)) error {
+	return r.transaction(ctx, func(routes []Route) ([]Route, func() error, error) {
 		next, err := fn(routes)
 		return next, nil, err
 	})
 }
 
+// lockAcquire takes the interprocess lock, failing fast when the deadline is
+// hit. A deadline expiry (held by a stuck process) reports that specifically.
+func (r *Registry) lockAcquire(ctx context.Context) error {
+	lockCtx, cancel := context.WithTimeout(ctx, LockTimeout())
+	defer cancel()
+	taken, err := r.lock.TryLockContext(lockCtx, 50*time.Millisecond)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return errors.New("registry lock held by another wtree process and appears stuck; it will time out on its own — retry shortly")
+		}
+		return fmt.Errorf("acquire registry lock: %w", err)
+	}
+	if !taken {
+		return errors.New("registry lock held by another wtree process and appears stuck; it will time out on its own — retry shortly")
+	}
+	return nil
+}
+
 // transaction keeps compensation under the same lock as activation and commit.
-func (r *Registry) transaction(fn func([]Route) ([]Route, func() error, error)) (result error) {
+func (r *Registry) transaction(ctx context.Context, fn func(routes []Route) ([]Route, func() error, error)) (result error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if err := r.lock.Lock(); err != nil {
+	if err := r.lockAcquire(ctx); err != nil {
 		return err
 	}
 	defer r.lock.Unlock()
@@ -117,7 +149,7 @@ func (r *Registry) transaction(fn func([]Route) ([]Route, func() error, error)) 
 }
 
 func (r *Registry) Register(route Route) error {
-	return r.Transaction(func(routes []Route) ([]Route, error) {
+	return r.Transaction(context.Background(), func(routes []Route) ([]Route, error) {
 		for _, existing := range routes {
 			if existing.Slug == route.Slug {
 				return nil, fmt.Errorf("slug %q is already active; use --slug <alternative>", route.Slug)
@@ -129,7 +161,7 @@ func (r *Registry) Register(route Route) error {
 
 func (r *Registry) Remove(slug string) (bool, error) {
 	removed := false
-	err := r.Transaction(func(routes []Route) ([]Route, error) {
+	err := r.Transaction(context.Background(), func(routes []Route) ([]Route, error) {
 		for i, route := range routes {
 			if route.Slug == slug {
 				removed = true
@@ -141,10 +173,10 @@ func (r *Registry) Remove(slug string) (bool, error) {
 	return removed, err
 }
 
-func (r *Registry) List() ([]Route, error) {
+func (r *Registry) List(ctx context.Context) ([]Route, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if err := r.lock.Lock(); err != nil {
+	if err := r.lockAcquire(ctx); err != nil {
 		return nil, err
 	}
 	defer r.lock.Unlock()

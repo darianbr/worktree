@@ -60,7 +60,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, deps Depe
 		return fail(errors.New("route registry is not configured"))
 	}
 	if args[0] == "status" {
-		routes, err := deps.Registry.List()
+		routes, err := deps.Registry.List(ctx)
 		if err != nil {
 			return fail(err)
 		}

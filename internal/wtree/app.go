@@ -194,7 +194,7 @@ func activate(ctx context.Context, d Dependencies, routes []Route) (func() error
 }
 
 func addRoute(ctx context.Context, d Dependencies, route Route) error {
-	return d.Registry.transaction(func(routes []Route) ([]Route, func() error, error) {
+	return d.Registry.transaction(ctx, func(routes []Route) ([]Route, func() error, error) {
 		for _, r := range routes {
 			if r.Slug == route.Slug {
 				return nil, nil, fmt.Errorf("slug %q is already active; use --slug <value>", route.Slug)
@@ -211,7 +211,7 @@ func addRoute(ctx context.Context, d Dependencies, route Route) error {
 
 func removeRoute(ctx context.Context, d Dependencies, slug, root string) (bool, error) {
 	removed := false
-	err := d.Registry.transaction(func(routes []Route) ([]Route, func() error, error) {
+	err := d.Registry.transaction(ctx, func(routes []Route) ([]Route, func() error, error) {
 		index := -1
 		for i, r := range routes {
 			if (slug != "" && r.Slug == slug) || (slug == "" && r.Worktree == root) {
