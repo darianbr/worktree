@@ -115,6 +115,9 @@ func TestRegistrySameInstanceSerializesTransactions(t *testing.T) {
 	}
 }
 
+// TestRegistryLockTimesOut proves a stuck lock holder fails the waiter fast
+// instead of blocking it. The holder goroutine is joined in t.Cleanup so the
+// TempDir removal never races the lockfile.
 func TestRegistryLockTimesOut(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "routes.json")
 	a, err := OpenRegistry(path)
@@ -127,15 +130,23 @@ func TestRegistryLockTimesOut(t *testing.T) {
 	}
 
 	acquired := make(chan struct{})
-	release := make(chan struct{})
+	releaseCh := make(chan struct{})
+	releaseOnce := sync.Once{}
+	release := func() { releaseOnce.Do(func() { close(releaseCh) }) }
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		_ = a.Transaction(context.Background(), func(routes []Route) ([]Route, error) {
 			close(acquired)
-			<-release
+			<-releaseCh
 			return routes, nil
 		})
 	}()
 	<-acquired
+	t.Cleanup(func() {
+		release()
+		<-done
+	})
 
 	t.Setenv("WTREE_LOCK_TIMEOUT", "1")
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -144,16 +155,12 @@ func TestRegistryLockTimesOut(t *testing.T) {
 	err = b.Transaction(ctx, func(routes []Route) ([]Route, error) { return routes, nil })
 	elapsed := time.Since(start)
 	if err == nil {
-		close(release)
 		t.Fatal("expected lock timeout error, got nil")
 	}
 	if !strings.Contains(err.Error(), "appears stuck") {
-		close(release)
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if elapsed > 2*time.Second {
-		close(release)
 		t.Fatalf("lock acquisition did not fail fast: %v", elapsed)
 	}
-	close(release)
 }
