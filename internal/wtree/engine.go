@@ -11,7 +11,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
+	"time"
 )
 
 const containerName = "wtree-caddy"
@@ -81,6 +83,8 @@ func selectEngine(ctx context.Context, platform, override string, lookPath func(
 }
 
 func (e Engine) State(ctx context.Context) (ContainerState, error) {
+	ctx, cancel := bounded(ctx)
+	defer cancel()
 	out, err := e.Runner.Run(ctx, e.Binary, "ps", "-a", "--filter", "name=^/"+containerName+"$", "--format", "{{.Names}}")
 	if err != nil {
 		return ContainerAbsent, fmt.Errorf("discover %s: %w: %s", containerName, err, strings.TrimSpace(string(out)))
@@ -122,6 +126,8 @@ func (e Engine) CheckMounts(ctx context.Context, p Paths, state ContainerState) 
 	if state == ContainerAbsent {
 		return nil
 	}
+	ctx, cancel := bounded(ctx)
+	defer cancel()
 	out, err := e.Runner.Run(ctx, e.Binary, "inspect", "--format", "{{json .}}", containerName)
 	if err != nil {
 		return fmt.Errorf("inspect container mounts: %w: %s", err, strings.TrimSpace(string(out)))
@@ -179,6 +185,8 @@ func (e Engine) bindMode() string {
 }
 
 func (e *Engine) Start(ctx context.Context, p Paths) error {
+	ctx, cancel := bounded(ctx)
+	defer cancel()
 	var token [16]byte
 	if _, err := rand.Read(token[:]); err != nil {
 		return fmt.Errorf("generate container ownership token: %w", err)
@@ -198,14 +206,20 @@ func (e *Engine) Start(ctx context.Context, p Paths) error {
 }
 
 func (e Engine) Validate(ctx context.Context) error {
+	ctx, cancel := bounded(ctx)
+	defer cancel()
 	return e.run(ctx, "exec", containerName, "caddy", "validate", "--config", "/etc/wtree/Caddyfile", "--adapter", "caddyfile")
 }
 
 func (e Engine) Reload(ctx context.Context) error {
+	ctx, cancel := bounded(ctx)
+	defer cancel()
 	return e.run(ctx, "exec", containerName, "caddy", "reload", "--config", "/etc/wtree/Caddyfile", "--adapter", "caddyfile")
 }
 
 func (e Engine) ValidateCandidate(ctx context.Context, p Paths, state ContainerState) error {
+	ctx, cancel := bounded(ctx)
+	defer cancel()
 	if state == ContainerRunning {
 		return e.Validate(ctx)
 	}
@@ -216,6 +230,8 @@ func (e Engine) ValidateCandidate(ctx context.Context, p Paths, state ContainerS
 }
 
 func (e Engine) StartExisting(ctx context.Context) error {
+	ctx, cancel := bounded(ctx)
+	defer cancel()
 	if e.isPodman() && os.Getenv("WTREE_SELINUX_RELABEL") != "1" {
 		out, err := e.Runner.Run(ctx, e.Binary, "inspect", "--format", "{{json .}}", containerName)
 		if err != nil {
@@ -234,6 +250,8 @@ func (e Engine) StartExisting(ctx context.Context) error {
 	return e.run(ctx, "start", containerName)
 }
 func (e Engine) Stop(ctx context.Context) error {
+	ctx, cancel := bounded(ctx)
+	defer cancel()
 	state, err := e.State(ctx)
 	if err != nil {
 		return err
@@ -244,6 +262,8 @@ func (e Engine) Stop(ctx context.Context) error {
 	return e.run(ctx, "stop", containerName)
 }
 func (e Engine) Remove(ctx context.Context) error {
+	ctx, cancel := bounded(ctx)
+	defer cancel()
 	state, err := e.State(ctx)
 	if err != nil {
 		return err
@@ -266,4 +286,26 @@ func (e Engine) Remove(ctx context.Context) error {
 		return errors.New("refusing to remove a container created by another invocation")
 	}
 	return e.run(ctx, "rm", "-f", info.ID)
+}
+
+// EngineTimeout bounds every container-engine call. WTREE_TIMEOUT overrides it
+// in seconds; invalid or missing values fall back to the 30s default.
+func EngineTimeout() time.Duration {
+	if v := os.Getenv("WTREE_TIMEOUT"); v != "" {
+		if secs, err := strconv.Atoi(v); err == nil && secs > 0 {
+			return time.Duration(secs) * time.Second
+		}
+	}
+	return 30 * time.Second
+}
+
+// bounded derives a working context whose deadline is no later than the
+// caller's existing deadline and EngineTimeout.
+func bounded(ctx context.Context) (context.Context, context.CancelFunc) {
+	deadline, hasDeadline := ctx.Deadline()
+	max := time.Now().Add(EngineTimeout())
+	if hasDeadline && deadline.Before(max) {
+		return ctx, func() {}
+	}
+	return context.WithDeadline(ctx, max)
 }

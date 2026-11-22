@@ -7,15 +7,20 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 type fakeRunner struct {
-	calls  [][]string
-	fail   string
-	output string
+	calls   [][]string
+	fail    string
+	output  string
+	capture func(ctx context.Context, call string)
 }
 
-func (f *fakeRunner) Run(_ context.Context, bin string, args ...string) ([]byte, error) {
+func (f *fakeRunner) Run(ctx context.Context, bin string, args ...string) ([]byte, error) {
+	if f.capture != nil {
+		f.capture(ctx, strings.Join(append([]string{bin}, args...), " "))
+	}
 	f.calls = append(f.calls, append([]string{bin}, args...))
 	if strings.Contains(strings.Join(args, " "), f.fail) && f.fail != "" {
 		out := f.output
@@ -287,5 +292,29 @@ func TestEngineDoesNotRemoveContainerItDidNotCreate(t *testing.T) {
 		if strings.HasPrefix(call, "docker rm ") {
 			t.Fatalf("removed unrelated container: %v", f.calls)
 		}
+	}
+}
+
+func TestEngineCallsCarryDeadline(t *testing.T) {
+	f := &fakeRunner{}
+	var gotCtx context.Context
+	f.capture = func(ctx context.Context, call string) { gotCtx = ctx }
+	e := Engine{Binary: "podman", Runner: f}
+	if _, err := e.State(context.Background()); err != nil {
+		t.Fatalf("State: %v", err)
+	}
+	deadline, ok := gotCtx.Deadline()
+	if !ok {
+		t.Fatal("engine call context has no deadline")
+	}
+	if d := time.Until(deadline); d < 29*time.Second || d > 31*time.Second {
+		t.Fatalf("default deadline not ~30s: %v", d)
+	}
+}
+
+func TestEngineTimeoutOverride(t *testing.T) {
+	t.Setenv("WTREE_TIMEOUT", "5")
+	if got := EngineTimeout(); got != 5*time.Second {
+		t.Fatalf("EngineTimeout() = %v, want 5s", got)
 	}
 }
