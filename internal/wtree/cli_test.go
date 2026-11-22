@@ -375,3 +375,44 @@ func TestRunStatusAndMissingDownWithoutEngine(t *testing.T) {
 		t.Fatalf("missing down wrote registry: %v", err)
 	}
 }
+
+func TestStatusReportsStaleWithHint(t *testing.T) {
+	d, _, r := fixture(t)
+	if err := r.Register(Route{Slug: "alpha", Port: 8080, Worktree: "/work/alpha"}); err != nil {
+		t.Fatal(err)
+	}
+	e := &recordingEngine{state: ContainerAbsent, startErr: errors.New("bind: address already in use")}
+	d.Engine = func(context.Context) (LifecycleEngine, error) { return e, nil }
+	var out, errOut bytes.Buffer
+	code := Run(context.Background(), []string{"status"}, &out, &errOut, d)
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	if !strings.Contains(out.String(), "stale (proxy down)") {
+		t.Fatalf("missing stale marker: %s", out.String())
+	}
+	if !strings.Contains(out.String(), "sudo sysctl -w net.ipv4.ip_unprivileged_port_start=443") {
+		t.Fatalf("missing port hint: %s", out.String())
+	}
+}
+
+func TestStatusServingExitsZero(t *testing.T) {
+	d, _, r := fixture(t)
+	if err := r.Register(Route{Slug: "alpha", Port: 8080, Worktree: "/work/alpha"}); err != nil {
+		t.Fatal(err)
+	}
+	config, err := RenderCaddyfile([]Route{{Slug: "alpha", Port: 8080, Worktree: "/work/alpha"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(d.Paths.Config, config, 0600); err != nil {
+		t.Fatal(err)
+	}
+	e := &recordingEngine{state: ContainerRunning}
+	d.Engine = func(context.Context) (LifecycleEngine, error) { return e, nil }
+	var out, errOut bytes.Buffer
+	code := Run(context.Background(), []string{"status"}, &out, &errOut, d)
+	if code != 0 || !strings.Contains(out.String(), "serving") {
+		t.Fatalf("code=%d out=%s", code, out.String())
+	}
+}

@@ -64,8 +64,21 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, deps Depe
 		if err != nil {
 			return fail(err)
 		}
+		if len(routes) == 0 {
+			// Nothing to serve; a read-only status must not require the engine.
+			return 0
+		}
+		state, reconcileErr := Reconcile(ctx, deps)
 		for _, r := range routes {
-			fmt.Fprintf(stdout, "https://%s.wtree.dev\t127.0.0.1:%d\t%s\n", r.Slug, r.Port, r.Worktree)
+			fmt.Fprintf(stdout, "https://%s.wtree.dev\t127.0.0.1:%d\t%s\t%s\n", r.Slug, r.Port, r.Worktree, stateLabel(state))
+		}
+		if state != ProxyServing {
+			hint := "inspect: podman logs wtree-caddy"
+			if reconcileErr != nil {
+				hint = StaleHint(reconcileErr)
+			}
+			fmt.Fprintf(stdout, "hint: %s\n", hint)
+			return 1
 		}
 		return 0
 	}

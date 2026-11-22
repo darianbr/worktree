@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 )
 
 // ProxyState reports whether the Caddy proxy is serving after reconciliation.
@@ -15,6 +16,29 @@ const (
 	ProxyDown ProxyState = iota
 	ProxyServing
 )
+
+func stateLabel(s ProxyState) string {
+	if s == ProxyServing {
+		return "serving"
+	}
+	return "stale (proxy down)"
+}
+
+// StaleHint maps a reconcile failure to the single most likely fix, so status
+// can point at the remedy instead of dumping raw engine errors.
+func StaleHint(err error) string {
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "bind") || strings.Contains(msg, "address already in use"):
+		return "run: sudo sysctl -w net.ipv4.ip_unprivileged_port_start=443"
+	case strings.Contains(msg, "pull") || strings.Contains(msg, "manifest"):
+		return "check network access to docker.io/library/caddy:2.11.9"
+	case strings.Contains(msg, "permission denied"):
+		return "SELinux may block the bind mounts; relabel with chcon -Rt svirt_sandbox_file_t ~/.config/wtree"
+	default:
+		return "inspect: podman logs wtree-caddy"
+	}
+}
 
 // Reconcile converges the container and on-disk Caddyfile to what the registry
 // says should be true. It runs at the start of every command so that any
@@ -27,6 +51,9 @@ func Reconcile(ctx context.Context, d Dependencies) (ProxyState, error) {
 		return ProxyDown, err
 	}
 	if len(routes) == 0 {
+		// Nothing to serve. Without an engine configured there is nothing to
+		// reconcile (status works engine-less); with one, stop a stray proxy so
+		// port 443 is only bound while routes exist.
 		if d.Engine == nil {
 			return ProxyDown, nil
 		}
