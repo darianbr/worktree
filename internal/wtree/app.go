@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -40,6 +41,7 @@ type Dependencies struct {
 	Registry *Registry
 	Git      Git
 	Engine   func(context.Context) (LifecycleEngine, error)
+	Stderr   io.Writer
 }
 
 func validateCertificate(p Paths) error {
@@ -199,6 +201,9 @@ func addRoute(ctx context.Context, d Dependencies, route Route) error {
 			if r.Slug == route.Slug {
 				return nil, nil, fmt.Errorf("slug %q is already active; use --slug <value>", route.Slug)
 			}
+		}
+		if _, err := ProvisionTLS(d.Paths, d.Stderr); err != nil {
+			return nil, nil, fmt.Errorf("provision TLS certificate: %w", err)
 		}
 		if err := validateCertificate(d.Paths); err != nil {
 			return nil, nil, err

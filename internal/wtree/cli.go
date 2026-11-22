@@ -16,6 +16,7 @@ const usage = "Usage: wtree up --port <1..65535> [--slug <slug>] | down [--slug 
 
 // Run executes one CLI invocation; status and help do not require a container engine.
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer, deps Dependencies) int {
+	deps.Stderr = stderr
 	fail := func(err error) int { fmt.Fprintln(stderr, "wtree:", err); return 1 }
 	if len(args) == 0 {
 		fmt.Fprint(stderr, usage)

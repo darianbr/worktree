@@ -212,7 +212,7 @@ func TestRunDetachedRequiresSlug(t *testing.T) {
 	}
 }
 
-func TestCertificatePreflight(t *testing.T) {
+func TestUpProvisionsInvalidCertificate(t *testing.T) {
 	for _, tc := range []struct {
 		name              string
 		names             []string
@@ -233,12 +233,15 @@ func TestCertificatePreflight(t *testing.T) {
 			} else {
 				testCertificate(t, d.Paths, tc.names, tc.before, tc.after, tc.mismatch)
 			}
-			if code, _, err := invoke(d, "up", "--port", "3000"); code == 0 {
-				t.Fatalf("accepted certificate: %q", err)
+			if code, _, err := invoke(d, "up", "--port", "3000"); code != 0 {
+				t.Fatalf("up should self-heal the certificate: %d %q", code, err)
+			}
+			if err := validateCertificate(d.Paths); err != nil {
+				t.Fatalf("provisioned certificate fails validation: %v", err)
 			}
 			routes, err := r.List(context.Background())
-			if err != nil || len(routes) != 0 || e.state != ContainerAbsent {
-				t.Fatalf("side effect: %v %v %v", routes, err, e.state)
+			if err != nil || len(routes) != 1 || e.state != ContainerRunning {
+				t.Fatalf("route not active: %v %v %v", routes, err, e.state)
 			}
 		})
 	}
