@@ -48,6 +48,26 @@ func TestEngineStartUsesHostNetworkAndReadOnlyMounts(t *testing.T) {
 	}
 }
 
+func TestSelectEngineDiscoveryIsBounded(t *testing.T) {
+	var infoCtx context.Context
+	f := &fakeRunner{}
+	f.capture = func(ctx context.Context, call string) {
+		if strings.HasPrefix(call, "podman info") {
+			infoCtx = ctx
+		}
+	}
+	_, err := selectEngine(context.Background(), "linux", "podman", func(string) (string, error) { return "podman", nil }, f)
+	if err != nil {
+		t.Fatalf("selectEngine: %v", err)
+	}
+	if infoCtx == nil {
+		t.Fatal("info probe not captured")
+	}
+	if _, ok := infoCtx.Deadline(); !ok {
+		t.Fatal("discovery info probe has no deadline; a stalled daemon would hang the CLI")
+	}
+}
+
 func TestEngineRejectsUnverifiedMacNetworking(t *testing.T) {
 	called := false
 	_, err := selectEngine(context.Background(), "darwin", "docker", func(name string) (string, error) {

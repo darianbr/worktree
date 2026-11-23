@@ -127,9 +127,10 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, deps Depe
 	if removed && runtime.GOOS == "linux" && deps.Sudo != nil {
 		remaining, listErr := deps.Registry.List(ctx)
 		if listErr == nil && len(remaining) == 0 {
-			if err := RestoreThreshold(deps.Paths, CurrentThreshold, deps.Sudo); err != nil {
-				return fail(err)
-			}
+			// Best-effort (spec D5): the route is already gone, so `down` reports
+			// success even if restore fails. RestoreThreshold prints the one-line
+			// manual command and keeps the marker so a later command retries.
+			_ = RestoreThreshold(deps.Paths, CurrentThreshold, deps.Sudo)
 		}
 	}
 	if removed {

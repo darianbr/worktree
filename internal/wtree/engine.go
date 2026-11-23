@@ -43,6 +43,10 @@ func selectEngine(ctx context.Context, platform, override string, lookPath func(
 	if platform == "darwin" {
 		return Engine{}, errors.New("macOS container networking has not been validated for loopback-only isolation; wtree cannot safely start or modify routes on macOS yet")
 	}
+	// Discovery runs before an Engine exists, so bound it here: a stalled
+	// container daemon must fail the probe, not hang the CLI (G1).
+	ctx, cancel := bounded(ctx)
+	defer cancel()
 	candidates := []string{"podman", "docker"}
 	if override != "" {
 		candidates = []string{override}

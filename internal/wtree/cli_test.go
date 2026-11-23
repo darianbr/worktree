@@ -376,6 +376,44 @@ func TestRunReportsCompensationFailure(t *testing.T) {
 	}
 }
 
+func TestDownSucceedsEvenIfThresholdRestoreFails(t *testing.T) {
+	d, e, r := fixture(t)
+	route := Route{Slug: "alpha", Port: 8080, Worktree: "/work/alpha"}
+	if err := r.Register(route); err != nil {
+		t.Fatal(err)
+	}
+	config, _ := RenderCaddyfile([]Route{route})
+	if err := os.WriteFile(d.Paths.Config, config, 0600); err != nil {
+		t.Fatal(err)
+	}
+	e.state = ContainerRunning
+	cur, err := CurrentThreshold()
+	if err != nil || cur == 0 {
+		t.Skipf("no threshold management on this host: %v", err)
+	}
+	// Simulate wtree having lowered the threshold earlier: a marker whose
+	// original differs from the current value forces restore to call sudo.
+	original := cur + 1
+	if original > 65535 {
+		original = cur - 1
+	}
+	writeTestMarker(t, d.Paths, original)
+	var sudoCalls [][]string
+	d.Sudo = func(args ...string) error { sudoCalls = append(sudoCalls, args); return errors.New("sudo unavailable") }
+	var out, errOut bytes.Buffer
+	code := Run(context.Background(), []string{"down", "--slug", "alpha"}, &out, &errOut, d)
+	if code != 0 {
+		t.Fatalf("down must succeed even if restore fails: %d %q", code, errOut.String())
+	}
+	routes, _ := r.List(context.Background())
+	if len(routes) != 0 {
+		t.Fatalf("route not removed: %v", routes)
+	}
+	if len(sudoCalls) == 0 {
+		t.Fatal("restore did not attempt sudo")
+	}
+}
+
 func TestRunStatusAndMissingDownWithoutEngine(t *testing.T) {
 	d, _, _ := fixture(t)
 	d.Engine = func(context.Context) (LifecycleEngine, error) { return nil, errors.New("engine should not be called") }
