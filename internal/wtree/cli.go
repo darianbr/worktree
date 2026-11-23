@@ -8,6 +8,7 @@ import (
 	"io"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 )
@@ -95,6 +96,13 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, deps Depe
 		}
 	}
 	if args[0] == "up" {
+		// Threshold management is a production concern; it is skipped when no
+		// SudoRunner is injected so unit tests never touch the real sysctl or sudo.
+		if runtime.GOOS == "linux" && deps.Sudo != nil {
+			if err := EnsureThreshold443(deps.Paths, CurrentThreshold, deps.Sudo); err != nil {
+				return fail(err)
+			}
+		}
 		resolved, err := ResolveSlug(*slug, branch)
 		if err != nil {
 			return fail(err)
@@ -115,6 +123,14 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, deps Depe
 	removed, err := removeRoute(ctx, deps, *slug, root)
 	if err != nil {
 		return fail(err)
+	}
+	if removed && runtime.GOOS == "linux" && deps.Sudo != nil {
+		remaining, listErr := deps.Registry.List(ctx)
+		if listErr == nil && len(remaining) == 0 {
+			if err := RestoreThreshold(deps.Paths, CurrentThreshold, deps.Sudo); err != nil {
+				return fail(err)
+			}
+		}
 	}
 	if removed {
 		fmt.Fprintln(stdout, "Route removed")
@@ -165,7 +181,7 @@ func DefaultDependencies() (Dependencies, error) {
 	if err != nil {
 		return Dependencies{}, err
 	}
-	return Dependencies{Paths: p, Registry: r, Git: ExecGit{}, Engine: func(ctx context.Context) (LifecycleEngine, error) {
+	return Dependencies{Paths: p, Registry: r, Git: ExecGit{}, Sudo: prodSudo, Engine: func(ctx context.Context) (LifecycleEngine, error) {
 		e, err := SelectEngine(ctx)
 		if err != nil {
 			return nil, err

@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/darianbr/worktree/internal/wtree"
 )
@@ -20,5 +22,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "wtree:", err)
 		os.Exit(1)
 	}
-	os.Exit(wtree.Run(context.Background(), os.Args[1:], os.Stdout, os.Stderr, deps))
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	os.Exit(wtree.Run(ctx, os.Args[1:], os.Stdout, os.Stderr, deps))
 }

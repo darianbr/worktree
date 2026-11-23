@@ -42,6 +42,7 @@ type Dependencies struct {
 	Git      Git
 	Engine   func(context.Context) (LifecycleEngine, error)
 	Stderr   io.Writer
+	Sudo     SudoRunner
 }
 
 func validateCertificate(p Paths) error {

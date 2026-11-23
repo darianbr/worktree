@@ -1,6 +1,7 @@
 package wtree
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -348,4 +349,170 @@ func TestPodmanCaddyIntegration(t *testing.T) {
 		t.Fatalf("removed state: %v, %v", state, err)
 	}
 	t.Log("adapter stopped, restarted, and removed its temporary container")
+}
+
+// integrationSelfHealDeps builds a full CLI Dependencies backed by an isolated
+// container (unique name + token), a temp config dir, and a provisioned local
+// CA. It returns the deps, the engine, the runner (for cleanup), the CA pool,
+// and the upstream port.
+func integrationSelfHealDeps(t *testing.T) (Dependencies, Engine, *isolatedPodmanRunner, *x509.CertPool, int) {
+	t.Helper()
+	if os.Getenv("WTREE_PODMAN_INTEGRATION") != "1" {
+		t.Skip("set WTREE_PODMAN_INTEGRATION=1 to run the rootless Podman integration test")
+	}
+	if runtime.GOOS != "linux" {
+		t.Skip("rootless host-network test requires Linux")
+	}
+	t.Setenv("WTREE_SELINUX_RELABEL", "1")
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	bin := "podman"
+	if out, err := (ExecRunner{}).Run(ctx, bin, "info", "--format", "{{.Host.Security.Rootless}}"); err != nil || strings.TrimSpace(string(out)) != "true" {
+		t.Fatalf("rootless Podman required: %v: %s", err, out)
+	}
+	if out, err := (ExecRunner{}).Run(ctx, bin, "image", "exists", caddyImage); err != nil {
+		t.Fatalf("pinned image %s must already be cached: %v: %s", caddyImage, err, out)
+	}
+	var random [16]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		t.Fatal(err)
+	}
+	token := hex.EncodeToString(random[:])
+	dir := t.TempDir()
+	configDir := filepath.Join(dir, "config")
+	dataDir := filepath.Join(dir, "data")
+	for _, path := range []string{configDir, dataDir} {
+		if err := os.Mkdir(path, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runner := &isolatedPodmanRunner{name: "wtree-integration-" + token, candidate: "wtree-validation-" + token, token: token, dataDir: dataDir}
+	t.Cleanup(func() { runner.cleanup(t, bin) })
+	e := Engine{Binary: bin, Runner: runner}
+	p := Paths{Dir: configDir, Config: filepath.Join(configDir, "Caddyfile"), Cert: filepath.Join(configDir, "tls", "fullchain.pem"), Key: filepath.Join(configDir, "tls", "privkey.pem"), Registry: filepath.Join(configDir, "routes.json")}
+	var hint bytes.Buffer
+	if _, err := ProvisionTLS(p, &hint); err != nil {
+		t.Fatalf("provision TLS: %v", err)
+	}
+	pool := x509.NewCertPool()
+	caData, err := os.ReadFile(filepath.Join(configDir, "tls", "ca.pem"))
+	if err != nil || !pool.AppendCertsFromPEM(caData) {
+		t.Fatalf("load provisioned CA: %v", err)
+	}
+	r, err := OpenRegistry(p.Registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	upstream := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "upstream:%s", r.URL.Path)
+	}))
+	upstream.Listener, err = net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	upstream.Start()
+	t.Cleanup(upstream.Close)
+	upstreamPort := upstream.Listener.Addr().(*net.TCPAddr).Port
+	d := Dependencies{Paths: p, Registry: r, Git: testGit{root: "/work/selfheal", branch: "feat/integration"}, Stderr: io.Discard, Engine: func(context.Context) (LifecycleEngine, error) { return &e, nil }}
+	return d, e, runner, pool, upstreamPort
+}
+
+func httpsGet(t *testing.T, ctx context.Context, pool *x509.CertPool, host, path string) string {
+	t.Helper()
+	transport := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool, ServerName: host, MinVersion: tls.VersionTLS12}}
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Transport: transport, Timeout: 3 * time.Second}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://127.0.0.1:443"+path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = host
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("HTTPS request through 443: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("proxy response: status=%s body=%q error=%v", resp.Status, body, err)
+	}
+	return string(body)
+}
+
+// TestSelfHealAfterContainerKill proves the core self-healing guarantee: after
+// the Caddy container is killed mid-session, the next `status` converges it back
+// to serving with zero user action.
+func TestSelfHealAfterContainerKill(t *testing.T) {
+	d, e, runner, pool, upstreamPort := integrationSelfHealDeps(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	var out, errOut bytes.Buffer
+	if code := Run(ctx, []string{"up", "--port", strconv.Itoa(upstreamPort), "--slug", "selfheal"}, &out, &errOut, d); code != 0 {
+		t.Fatalf("up: %d %q %q", code, out.String(), errOut.String())
+	}
+	state, err := e.State(ctx)
+	if err != nil || state != ContainerRunning {
+		t.Fatalf("container not running after up: %v %v", state, err)
+	}
+	if got := httpsGet(t, ctx, pool, "selfheal.wtree.dev", "/probe"); got != "upstream:/probe" {
+		t.Fatalf("unexpected upstream response before kill: %q", got)
+	}
+	// Kill the container mid-session (the isolated runner renames it).
+	if out, err := (ExecRunner{}).Run(ctx, "podman", "kill", runner.name); err != nil {
+		t.Fatalf("kill container: %v: %s", err, out)
+	}
+	state, err = e.State(ctx)
+	if err != nil || state != ContainerStopped {
+		t.Fatalf("container not stopped after kill: %v %v", state, err)
+	}
+	// The next status must self-heal to serving with no user action.
+	out.Reset()
+	errOut.Reset()
+	if code := Run(ctx, []string{"status"}, &out, &errOut, d); code != 0 {
+		t.Fatalf("status after kill: %d %q %q", code, out.String(), errOut.String())
+	}
+	if !strings.Contains(out.String(), "serving") {
+		t.Fatalf("status not serving after self-heal: %q", out.String())
+	}
+	state, err = e.State(ctx)
+	if err != nil || state != ContainerRunning {
+		t.Fatalf("container not restarted by status: %v %v", state, err)
+	}
+	if got := httpsGet(t, ctx, pool, "selfheal.wtree.dev", "/probe"); got != "upstream:/probe" {
+		t.Fatalf("unexpected upstream response after self-heal: %q", got)
+	}
+	t.Log("status self-healed the killed container back to serving")
+}
+
+// TestDownStopsContainerAndCleansConfig proves that removing the last route stops
+// the proxy (443 bound only while active) and removes the on-disk Caddyfile, and
+// that wtree leaves no threshold marker behind when it never lowered one.
+func TestDownStopsContainerAndCleansConfig(t *testing.T) {
+	d, e, _, _, upstreamPort := integrationSelfHealDeps(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	var out, errOut bytes.Buffer
+	if code := Run(ctx, []string{"up", "--port", strconv.Itoa(upstreamPort), "--slug", "downstop"}, &out, &errOut, d); code != 0 {
+		t.Fatalf("up: %d %q %q", code, out.String(), errOut.String())
+	}
+	state, err := e.State(ctx)
+	if err != nil || state != ContainerRunning {
+		t.Fatalf("container not running after up: %v %v", state, err)
+	}
+	out.Reset()
+	errOut.Reset()
+	if code := Run(ctx, []string{"down", "--slug", "downstop"}, &out, &errOut, d); code != 0 {
+		t.Fatalf("down: %d %q %q", code, out.String(), errOut.String())
+	}
+	state, err = e.State(ctx)
+	if err != nil || state != ContainerStopped {
+		t.Fatalf("container not stopped after down: %v %v", state, err)
+	}
+	if _, err := os.Stat(d.Paths.Config); !os.IsNotExist(err) {
+		t.Fatalf("Caddyfile not removed after last route: %v", err)
+	}
+	if _, err := os.Stat(markerPath(d.Paths)); !os.IsNotExist(err) {
+		t.Fatalf("wtree left a threshold marker it did not create: %v", err)
+	}
+	t.Log("down stopped the proxy and removed the Caddyfile")
 }

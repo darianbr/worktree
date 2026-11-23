@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"time"
 )
@@ -13,6 +14,16 @@ import (
 // to sudo with the terminal wired through so the password prompt reaches the
 // user directly; tests inject a recorder.
 type SudoRunner func(args ...string) error
+
+// prodSudo runs sudo with its I/O streamed straight to the user's terminal so
+// the password prompt is interactive and never captured by wtree.
+func prodSudo(args ...string) error {
+	cmd := exec.Command("sudo", args...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
 
 const thresholdMarkerFile = "port-threshold"
 
