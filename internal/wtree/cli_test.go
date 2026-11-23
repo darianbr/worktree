@@ -32,6 +32,7 @@ type testEngine struct {
 	fail      string
 	stopError bool
 	onReload  func()
+	stopHook  func()
 }
 
 func (e *testEngine) State(context.Context) (ContainerState, error)            { return e.state, nil }
@@ -72,7 +73,15 @@ func (e *testEngine) Reload(context.Context) error {
 	}
 	return e.load()
 }
-func (e *testEngine) Stop(context.Context) error { e.state = ContainerStopped; return nil }
+func (e *testEngine) Stop(context.Context) error {
+	if e.stopHook != nil {
+		f := e.stopHook
+		e.stopHook = nil
+		f()
+	}
+	e.state = ContainerStopped
+	return nil
+}
 func (e *testEngine) Remove(context.Context) error {
 	if e.stopError {
 		return errors.New("cannot remove container")
@@ -340,7 +349,9 @@ func TestRunDownCommitFailureRestoresRoute(t *testing.T) {
 	}
 	active := e.active
 	originalPath := r.path
-	e.onReload = func() { r.path = d.Paths.Dir }
+	// Last-route removal stops the proxy (not reloads), so hook Stop to corrupt
+	// the registry path and force a commit failure after activate succeeds.
+	e.stopHook = func() { r.path = d.Paths.Dir }
 	code, _, message := invoke(d, "down", "--slug", "one")
 	r.path = originalPath
 	if code == 0 {
