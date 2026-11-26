@@ -32,6 +32,7 @@ type testEngine struct {
 	fail      string
 	stopError bool
 	onReload  func()
+	stopHook  func()
 }
 
 func (e *testEngine) State(context.Context) (ContainerState, error)            { return e.state, nil }
@@ -72,7 +73,15 @@ func (e *testEngine) Reload(context.Context) error {
 	}
 	return e.load()
 }
-func (e *testEngine) Stop(context.Context) error { e.state = ContainerStopped; return nil }
+func (e *testEngine) Stop(context.Context) error {
+	if e.stopHook != nil {
+		f := e.stopHook
+		e.stopHook = nil
+		f()
+	}
+	e.state = ContainerStopped
+	return nil
+}
 func (e *testEngine) Remove(context.Context) error {
 	if e.stopError {
 		return errors.New("cannot remove container")
@@ -179,7 +188,7 @@ func TestRunLifecycleAndDuplicate(t *testing.T) {
 	if code, _, err := invoke(d, "down"); code != 0 {
 		t.Fatalf("repeat down: %s", err)
 	}
-	if routes, err := r.List(); err != nil || len(routes) != 0 {
+	if routes, err := r.List(context.Background()); err != nil || len(routes) != 0 {
 		t.Fatalf("routes: %v %v", routes, err)
 	}
 }
@@ -212,7 +221,7 @@ func TestRunDetachedRequiresSlug(t *testing.T) {
 	}
 }
 
-func TestCertificatePreflight(t *testing.T) {
+func TestUpProvisionsInvalidCertificate(t *testing.T) {
 	for _, tc := range []struct {
 		name              string
 		names             []string
@@ -233,12 +242,15 @@ func TestCertificatePreflight(t *testing.T) {
 			} else {
 				testCertificate(t, d.Paths, tc.names, tc.before, tc.after, tc.mismatch)
 			}
-			if code, _, err := invoke(d, "up", "--port", "3000"); code == 0 {
-				t.Fatalf("accepted certificate: %q", err)
+			if code, _, err := invoke(d, "up", "--port", "3000"); code != 0 {
+				t.Fatalf("up should self-heal the certificate: %d %q", code, err)
 			}
-			routes, err := r.List()
-			if err != nil || len(routes) != 0 || e.state != ContainerAbsent {
-				t.Fatalf("side effect: %v %v %v", routes, err, e.state)
+			if err := validateCertificate(d.Paths); err != nil {
+				t.Fatalf("provisioned certificate fails validation: %v", err)
+			}
+			routes, err := r.List(context.Background())
+			if err != nil || len(routes) != 1 || e.state != ContainerRunning {
+				t.Fatalf("route not active: %v %v %v", routes, err, e.state)
 			}
 		})
 	}
@@ -270,7 +282,7 @@ func TestRunRollbackActivationFailures(t *testing.T) {
 			if failure != "start" && e.active != active {
 				t.Fatal("active configuration changed")
 			}
-			routes, err := r.List()
+			routes, err := r.List(context.Background())
 			if err != nil || len(routes) != 1 || routes[0].Slug != "one" {
 				t.Fatalf("routes: %v %v", routes, err)
 			}
@@ -299,7 +311,7 @@ func TestRunRollbackRegistryCommitFailure(t *testing.T) {
 	if err != nil || !bytes.Equal(old, config) || e.active != active {
 		t.Fatalf("failed to compensate: %v active=%q", err, e.active)
 	}
-	routes, err := r.List()
+	routes, err := r.List(context.Background())
 	if err != nil || len(routes) != 1 || routes[0].Slug != "one" {
 		t.Fatalf("registry: %v %v", routes, err)
 	}
@@ -319,7 +331,7 @@ func TestRunFirstStartFailureRestoresAbsence(t *testing.T) {
 			if e.state != ContainerAbsent {
 				t.Fatalf("container remains: %v", e.state)
 			}
-			if routes, err := r.List(); err != nil || len(routes) != 0 {
+			if routes, err := r.List(context.Background()); err != nil || len(routes) != 0 {
 				t.Fatalf("routes: %v %v", routes, err)
 			}
 		})
@@ -337,7 +349,9 @@ func TestRunDownCommitFailureRestoresRoute(t *testing.T) {
 	}
 	active := e.active
 	originalPath := r.path
-	e.onReload = func() { r.path = d.Paths.Dir }
+	// Last-route removal stops the proxy (not reloads), so hook Stop to corrupt
+	// the registry path and force a commit failure after activate succeeds.
+	e.stopHook = func() { r.path = d.Paths.Dir }
 	code, _, message := invoke(d, "down", "--slug", "one")
 	r.path = originalPath
 	if code == 0 {
@@ -347,7 +361,7 @@ func TestRunDownCommitFailureRestoresRoute(t *testing.T) {
 	if err != nil || !bytes.Equal(old, config) || e.active != active {
 		t.Fatalf("failed to restore: %v", err)
 	}
-	routes, err := r.List()
+	routes, err := r.List(context.Background())
 	if err != nil || len(routes) != 1 || routes[0].Slug != "one" {
 		t.Fatalf("registry: %v %v", routes, err)
 	}
@@ -362,9 +376,47 @@ func TestRunReportsCompensationFailure(t *testing.T) {
 	}
 }
 
+func TestDownSucceedsEvenIfThresholdRestoreFails(t *testing.T) {
+	d, e, r := fixture(t)
+	route := Route{Slug: "alpha", Port: 8080, Worktree: "/work/alpha"}
+	if err := r.Register(route); err != nil {
+		t.Fatal(err)
+	}
+	config, _ := RenderCaddyfile([]Route{route})
+	if err := os.WriteFile(d.Paths.Config, config, 0600); err != nil {
+		t.Fatal(err)
+	}
+	e.state = ContainerRunning
+	cur, err := CurrentThreshold()
+	if err != nil || cur == 0 {
+		t.Skipf("no threshold management on this host: %v", err)
+	}
+	// Simulate wtree having lowered the threshold earlier: a marker whose
+	// original differs from the current value forces restore to call sudo.
+	original := cur + 1
+	if original > 65535 {
+		original = cur - 1
+	}
+	writeTestMarker(t, d.Paths, original)
+	var sudoCalls [][]string
+	d.Sudo = func(args ...string) error { sudoCalls = append(sudoCalls, args); return errors.New("sudo unavailable") }
+	var out, errOut bytes.Buffer
+	code := Run(context.Background(), []string{"down", "--slug", "alpha"}, &out, &errOut, d)
+	if code != 0 {
+		t.Fatalf("down must succeed even if restore fails: %d %q", code, errOut.String())
+	}
+	routes, _ := r.List(context.Background())
+	if len(routes) != 0 {
+		t.Fatalf("route not removed: %v", routes)
+	}
+	if len(sudoCalls) == 0 {
+		t.Fatal("restore did not attempt sudo")
+	}
+}
+
 func TestRunStatusAndMissingDownWithoutEngine(t *testing.T) {
 	d, _, _ := fixture(t)
-	d.Engine = func(context.Context) (LifecycleEngine, error) { return nil, errors.New("engine should not be called") }
+	d.Engine = nil
 	if code, _, err := invoke(d, "status"); code != 0 {
 		t.Fatalf("status: %s", err)
 	}
@@ -373,5 +425,98 @@ func TestRunStatusAndMissingDownWithoutEngine(t *testing.T) {
 	}
 	if _, err := os.Stat(d.Paths.Registry); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("missing down wrote registry: %v", err)
+	}
+}
+
+func TestStatusReportsStaleWithHint(t *testing.T) {
+	d, _, r := fixture(t)
+	if err := r.Register(Route{Slug: "alpha", Port: 8080, Worktree: "/work/alpha"}); err != nil {
+		t.Fatal(err)
+	}
+	e := &recordingEngine{state: ContainerAbsent, startErr: errors.New("bind: address already in use")}
+	d.Engine = func(context.Context) (LifecycleEngine, error) { return e, nil }
+	var out, errOut bytes.Buffer
+	code := Run(context.Background(), []string{"status"}, &out, &errOut, d)
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	if !strings.Contains(out.String(), "stale (proxy down)") {
+		t.Fatalf("missing stale marker: %s", out.String())
+	}
+	if !strings.Contains(out.String(), "sudo sysctl -w net.ipv4.ip_unprivileged_port_start=443") {
+		t.Fatalf("missing port hint: %s", out.String())
+	}
+}
+
+func TestStatusServingExitsZero(t *testing.T) {
+	d, _, r := fixture(t)
+	if err := r.Register(Route{Slug: "alpha", Port: 8080, Worktree: "/work/alpha"}); err != nil {
+		t.Fatal(err)
+	}
+	config, err := RenderCaddyfile([]Route{{Slug: "alpha", Port: 8080, Worktree: "/work/alpha"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(d.Paths.Config, config, 0600); err != nil {
+		t.Fatal(err)
+	}
+	e := &recordingEngine{state: ContainerRunning}
+	d.Engine = func(context.Context) (LifecycleEngine, error) { return e, nil }
+	var out, errOut bytes.Buffer
+	code := Run(context.Background(), []string{"status"}, &out, &errOut, d)
+	if code != 0 || !strings.Contains(out.String(), "serving") {
+		t.Fatalf("code=%d out=%s", code, out.String())
+	}
+}
+
+func TestDownReconcilesBeforeRemovingRoute(t *testing.T) {
+	d, e, r := fixture(t)
+	route := Route{Slug: "alpha", Port: 8080, Worktree: "/work/alpha"}
+	if err := r.Register(route); err != nil {
+		t.Fatal(err)
+	}
+	stale := []byte("not the registry-derived Caddyfile")
+	if err := os.WriteFile(d.Paths.Config, stale, 0600); err != nil {
+		t.Fatal(err)
+	}
+	e.state = ContainerRunning
+
+	reloaded := false
+	e.onReload = func() { reloaded = true }
+	code, _, errOut := invoke(d, "down", "--slug", "alpha")
+	if code != 0 {
+		t.Fatalf("down: %d %q", code, errOut)
+	}
+	if !reloaded {
+		t.Fatal("down did not reconcile stale Caddyfile before removal")
+	}
+	routes, err := r.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(routes) != 0 {
+		t.Fatalf("route remains after down: %v", routes)
+	}
+}
+
+func TestUpReconcilesBeforeAddingRoute(t *testing.T) {
+	d, e, r := fixture(t)
+	route := Route{Slug: "existing", Port: 8080, Worktree: "/work/existing"}
+	if err := r.Register(route); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(d.Paths.Config, []byte("stale config"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	e.state = ContainerRunning
+	reloaded := false
+	e.onReload = func() { reloaded = true }
+
+	code, _, errOut := invoke(d, "up", "--port", "3000", "--slug", "new")
+	if code != 0 {
+		t.Fatalf("up: %d %q", code, errOut)
+	}
+	if !reloaded {
+		t.Fatal("up did not reconcile stale Caddyfile before adding route")
 	}
 }

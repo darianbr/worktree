@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -40,6 +41,8 @@ type Dependencies struct {
 	Registry *Registry
 	Git      Git
 	Engine   func(context.Context) (LifecycleEngine, error)
+	Stderr   io.Writer
+	Sudo     SudoRunner
 }
 
 func validateCertificate(p Paths) error {
@@ -98,10 +101,6 @@ func atomicConfig(path string, data []byte) error {
 // activate installs the candidate while the registry lock is held. Its rollback
 // restores both the file and live container, also if the subsequent commit fails.
 func activate(ctx context.Context, d Dependencies, routes []Route) (func() error, error) {
-	config, err := RenderCaddyfile(routes)
-	if err != nil {
-		return nil, err
-	}
 	if d.Engine == nil {
 		return nil, errors.New("container engine is not configured")
 	}
@@ -120,6 +119,13 @@ func activate(ctx context.Context, d Dependencies, routes []Route) (func() error
 	existed := err == nil
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("read previous Caddyfile: %w", err)
+	}
+	if len(routes) == 0 {
+		return activateEmpty(ctx, d, engine, state, old, existed)
+	}
+	config, err := RenderCaddyfile(routes)
+	if err != nil {
+		return nil, err
 	}
 	if err := atomicConfig(d.Paths.Config, config); err != nil {
 		return nil, fmt.Errorf("write candidate Caddyfile: %w", err)
@@ -193,12 +199,71 @@ func activate(ctx context.Context, d Dependencies, routes []Route) (func() error
 	return rollback, nil
 }
 
+// activateEmpty converges to the no-routes state: remove the on-disk Caddyfile
+// and stop the proxy so port 443 is only bound while routes exist. Its rollback
+// restores the previous Caddyfile and restarts the proxy if the commit fails.
+func activateEmpty(ctx context.Context, d Dependencies, engine LifecycleEngine, state ContainerState, old []byte, existed bool) (func() error, error) {
+	rollback := func() error {
+		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer cancel()
+		var errs []error
+		if existed {
+			if err := atomicConfig(d.Paths.Config, old); err != nil {
+				errs = append(errs, fmt.Errorf("restore Caddyfile: %w", err))
+			}
+		} else if err := os.Remove(d.Paths.Config); err != nil && !errors.Is(err, os.ErrNotExist) {
+			errs = append(errs, fmt.Errorf("remove candidate Caddyfile: %w", err))
+		}
+		switch state {
+		case ContainerRunning:
+			if existed && len(errs) == 0 {
+				if err := engine.StartExisting(cleanup); err != nil {
+					errs = append(errs, fmt.Errorf("restart Caddy: %w", err))
+				}
+			} else if !existed {
+				errs = append(errs, errors.New("cannot restore running Caddy: previous Caddyfile was absent"))
+			}
+		case ContainerStopped:
+			if existed && len(errs) == 0 {
+				if err := engine.StartExisting(cleanup); err != nil {
+					errs = append(errs, fmt.Errorf("restart Caddy: %w", err))
+				}
+			}
+		case ContainerAbsent:
+			if existed && len(errs) == 0 {
+				if err := engine.Start(cleanup, d.Paths); err != nil {
+					errs = append(errs, fmt.Errorf("restart Caddy: %w", err))
+				}
+			}
+		}
+		return errors.Join(errs...)
+	}
+	fail := func(err error) (func() error, error) {
+		if undo := rollback(); undo != nil {
+			err = errors.Join(err, fmt.Errorf("compensation failed: %w", undo))
+		}
+		return nil, err
+	}
+	if err := os.Remove(d.Paths.Config); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fail(fmt.Errorf("remove Caddyfile: %w", err))
+	}
+	if state == ContainerRunning {
+		if err := engine.Stop(ctx); err != nil {
+			return fail(fmt.Errorf("stop Caddy: %w", err))
+		}
+	}
+	return rollback, nil
+}
+
 func addRoute(ctx context.Context, d Dependencies, route Route) error {
-	return d.Registry.transaction(func(routes []Route) ([]Route, func() error, error) {
+	return d.Registry.transaction(ctx, func(routes []Route) ([]Route, func() error, error) {
 		for _, r := range routes {
 			if r.Slug == route.Slug {
 				return nil, nil, fmt.Errorf("slug %q is already active; use --slug <value>", route.Slug)
 			}
+		}
+		if _, err := ProvisionTLS(d.Paths, d.Stderr); err != nil {
+			return nil, nil, fmt.Errorf("provision TLS certificate: %w", err)
 		}
 		if err := validateCertificate(d.Paths); err != nil {
 			return nil, nil, err
@@ -211,7 +276,7 @@ func addRoute(ctx context.Context, d Dependencies, route Route) error {
 
 func removeRoute(ctx context.Context, d Dependencies, slug, root string) (bool, error) {
 	removed := false
-	err := d.Registry.transaction(func(routes []Route) ([]Route, func() error, error) {
+	err := d.Registry.transaction(ctx, func(routes []Route) ([]Route, func() error, error) {
 		index := -1
 		for i, r := range routes {
 			if (slug != "" && r.Slug == slug) || (slug == "" && r.Worktree == root) {
