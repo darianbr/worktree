@@ -103,6 +103,9 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, deps Depe
 				return fail(err)
 			}
 		}
+		if _, err := Reconcile(ctx, deps); err != nil {
+			return fail(err)
+		}
 		resolved, err := ResolveSlug(*slug, branch)
 		if err != nil {
 			return fail(err)
@@ -112,6 +115,9 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, deps Depe
 		}
 		fmt.Fprintf(stdout, "https://%s.wtree.dev\n", resolved)
 		return 0
+	}
+	if _, err := Reconcile(ctx, deps); err != nil {
+		return fail(err)
 	}
 	if *slug != "" {
 		var err error

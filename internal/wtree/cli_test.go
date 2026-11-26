@@ -416,7 +416,7 @@ func TestDownSucceedsEvenIfThresholdRestoreFails(t *testing.T) {
 
 func TestRunStatusAndMissingDownWithoutEngine(t *testing.T) {
 	d, _, _ := fixture(t)
-	d.Engine = func(context.Context) (LifecycleEngine, error) { return nil, errors.New("engine should not be called") }
+	d.Engine = nil
 	if code, _, err := invoke(d, "status"); code != 0 {
 		t.Fatalf("status: %s", err)
 	}
@@ -466,5 +466,57 @@ func TestStatusServingExitsZero(t *testing.T) {
 	code := Run(context.Background(), []string{"status"}, &out, &errOut, d)
 	if code != 0 || !strings.Contains(out.String(), "serving") {
 		t.Fatalf("code=%d out=%s", code, out.String())
+	}
+}
+
+func TestDownReconcilesBeforeRemovingRoute(t *testing.T) {
+	d, e, r := fixture(t)
+	route := Route{Slug: "alpha", Port: 8080, Worktree: "/work/alpha"}
+	if err := r.Register(route); err != nil {
+		t.Fatal(err)
+	}
+	stale := []byte("not the registry-derived Caddyfile")
+	if err := os.WriteFile(d.Paths.Config, stale, 0600); err != nil {
+		t.Fatal(err)
+	}
+	e.state = ContainerRunning
+
+	reloaded := false
+	e.onReload = func() { reloaded = true }
+	code, _, errOut := invoke(d, "down", "--slug", "alpha")
+	if code != 0 {
+		t.Fatalf("down: %d %q", code, errOut)
+	}
+	if !reloaded {
+		t.Fatal("down did not reconcile stale Caddyfile before removal")
+	}
+	routes, err := r.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(routes) != 0 {
+		t.Fatalf("route remains after down: %v", routes)
+	}
+}
+
+func TestUpReconcilesBeforeAddingRoute(t *testing.T) {
+	d, e, r := fixture(t)
+	route := Route{Slug: "existing", Port: 8080, Worktree: "/work/existing"}
+	if err := r.Register(route); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(d.Paths.Config, []byte("stale config"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	e.state = ContainerRunning
+	reloaded := false
+	e.onReload = func() { reloaded = true }
+
+	code, _, errOut := invoke(d, "up", "--port", "3000", "--slug", "new")
+	if code != 0 {
+		t.Fatalf("up: %d %q", code, errOut)
+	}
+	if !reloaded {
+		t.Fatal("up did not reconcile stale Caddyfile before adding route")
 	}
 }
