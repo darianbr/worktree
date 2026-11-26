@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -146,13 +147,20 @@ func TestRestoreDeletesMarkerWhenAlreadyAtOriginal(t *testing.T) {
 var errSudo = os.ErrPermission
 
 func TestCurrentThresholdSane(t *testing.T) {
-	// On this host (Linux) assert it returns without error and a sane value;
-	// the non-Linux (0, nil) contract is covered by the code path.
 	v, err := CurrentThreshold()
-	if err != nil {
-		t.Fatalf("CurrentThreshold: %v", err)
+	if runtime.GOOS == "linux" {
+		if err != nil {
+			t.Fatalf("CurrentThreshold: %v", err)
+		}
+		if v < 1 || v > 65535 {
+			t.Fatalf("implausible threshold %d", v)
+		}
+		return
 	}
-	if v < 1 || v > 65535 {
-		t.Fatalf("implausible threshold %d", v)
+	if err != nil {
+		t.Fatalf("non-Linux CurrentThreshold: %v", err)
+	}
+	if v != 0 {
+		t.Fatalf("non-Linux threshold = %d, want 0", v)
 	}
 }
